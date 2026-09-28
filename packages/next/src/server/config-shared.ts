@@ -1082,7 +1082,7 @@ export interface ExperimentalConfig {
    * can be observed by user code (a namespace object that escapes, a dynamic `import()`, a
    * CommonJS `require()`) keeps its original names.
    *
-   * Defaults to `false`
+   * Defaults to `true` for production builds and `false` in development.
    */
   turbopackMangleExportNames?: boolean
 
@@ -2463,10 +2463,10 @@ export const defaultConfig = Object.freeze({
     turbopackInferModuleSideEffects: true,
     turbopackPluginRuntimeStrategy: 'childProcesses',
     turbopackSharedRuntime: !isStableBuild(),
-    // Pinned off for stable releases. Left unset on canary so the Turbopack side picks the
-    // default from the build mode (on for production builds, off in development) — see
-    // `NextConfig::turbopack_mangle_export_names`. An explicit value always wins either way.
-    turbopackMangleExportNames: isStableBuild() ? false : undefined,
+    // Left unset so the Turbopack side picks the default from the build mode (on for production
+    // builds, off in development) — see `NextConfig::turbopack_mangle_export_names`. An explicit
+    // value always wins either way.
+    turbopackMangleExportNames: undefined,
   },
   htmlLimitedBots: undefined,
   bundlePagesRouterDependencies: false,
