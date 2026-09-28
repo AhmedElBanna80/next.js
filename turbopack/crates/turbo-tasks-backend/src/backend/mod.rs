@@ -2501,6 +2501,10 @@ impl TurboTasksBackend {
                 task.iter_outdated_output_dependencies()
                     .map(OutdatedEdge::OutputDependency),
             );
+            old_edges.extend(
+                task.iter_outdated_collectibles_dependencies()
+                    .map(OutdatedEdge::CollectiblesDependency),
+            );
         }
 
         // Check if output need to be updated
