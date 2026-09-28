@@ -44,11 +44,11 @@ use crate::{
         operation::{
             ExecuteContext, Operation, TaskGuard,
             connect_child::resurrect_deleted,
-            invalidate::{make_task_dirty, try_make_task_dirty},
+            invalidate::{make_task_dirty_internal, try_make_task_dirty},
         },
         storage_schema::TaskStorageAccessors,
     },
-    data::{ActivenessState, AggregationNumber, CollectibleRef},
+    data::{ActivenessState, AggregationNumber, CollectibleRef, CollectiblesRef},
     utils::swap_retain,
 };
 
@@ -312,10 +312,11 @@ pub enum AggregationUpdateJob {
     /// The id references are weak by construction: a dependent that was itself collected is
     /// skipped.
     InvalidateDueToDependencyTornDown { task_ids: TaskIdVec },
-    /// Invalidates tasks that are dependent on a collectible type.
+    /// Invalidates tasks that are dependent on a collectible type of `collectibles_task`.
     InvalidateDueToCollectiblesChange {
         task_ids: TaskIdVec,
-        #[cfg(feature = "task_dirty_cause")]
+        /// The task whose (aggregated) collectibles changed, i.e. the task the dependents read.
+        collectibles_task: TaskId,
         collectible_type: turbo_tasks::TraitTypeId,
     },
     /// Increases the active counter of the task
@@ -648,7 +649,7 @@ impl AggregatedDataUpdate {
                 if !dependent.is_empty() {
                     queue.push(AggregationUpdateJob::InvalidateDueToCollectiblesChange {
                         task_ids: dependent,
-                        #[cfg(feature = "task_dirty_cause")]
+                        collectibles_task: task.id(),
                         collectible_type: ty,
                     })
                 }
@@ -1555,12 +1556,22 @@ impl AggregationUpdateQueue {
                 }
                 AggregationUpdateJob::InvalidateDueToCollectiblesChange {
                     task_ids,
-                    #[cfg(feature = "task_dirty_cause")]
+                    collectibles_task,
                     collectible_type,
                 } => {
+                    let target = CollectiblesRef {
+                        task: collectibles_task,
+                        collectible_type,
+                    };
                     for task_id in task_ids {
-                        make_task_dirty(
-                            task_id,
+                        let mut task = ctx.task(task_id, TaskDataCategory::All);
+                        // Like cell dependencies: if the dependency is outdated, the current
+                        // execution hasn't read these collectibles yet and will see the new ones
+                        // when it does, so it must be made dirty but not stale.
+                        let make_stale = !task.outdated_collectibles_dependencies_contains(&target);
+                        make_task_dirty_internal(
+                            &mut task,
+                            make_stale,
                             #[cfg(feature = "task_dirty_cause")]
                             TaskDirtyCause::CollectiblesChange { collectible_type },
                             self,
