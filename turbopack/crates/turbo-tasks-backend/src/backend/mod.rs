@@ -2951,9 +2951,7 @@ impl TurboTasksBackend {
             }
         }
 
-        // Clean up task storage after execution:
-        // - Shrink collections marked with shrink_on_completion
-        // - Drop dependency fields for immutable tasks (they'll never re-execute)
+        // Free memory now that execution is complete.
         task.cleanup_after_execution();
 
         drop(task);
