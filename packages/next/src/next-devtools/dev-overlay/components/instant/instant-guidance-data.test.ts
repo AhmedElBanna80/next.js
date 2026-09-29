@@ -4,14 +4,17 @@ import {
   createRuntimeBodyErrorInNavigation,
   createLinkBodyErrorInNavigation,
   createNavigationBodyErrorInNavigation,
+  createPrefetchBodyErrorInNavigation,
   createDynamicBodyErrorInNavigation,
   createRuntimeMetadataError,
   createLinkMetadataError,
   createNavigationMetadataError,
+  createPrefetchMetadataError,
   createDynamicMetadataError,
   createRuntimeViewportError,
   createLinkViewportError,
   createNavigationViewportError,
+  createPrefetchViewportError,
   createDynamicViewportError,
 } from '../../../../server/app-render/blocking-route-messages'
 import { createLinkPrefetchPartialError } from '../../../../shared/lib/instant-messages'
@@ -29,6 +32,7 @@ import {
 const GUIDANCE_VARIANTS = [
   'runtime',
   'link',
+  'prefetch',
   'navigation',
   'dynamic',
 ] as const satisfies GuidanceVariant[]
@@ -74,6 +78,12 @@ describe('instant-guidance-data card ordering', () => {
       'link',
     ],
     [
+      'blocking-route prefetch in navigation',
+      createPrefetchBodyErrorInNavigation('/x').message,
+      'blocking-route',
+      'prefetch',
+    ],
+    [
       'blocking-route navigation in navigation',
       createNavigationBodyErrorInNavigation('/x').message,
       'blocking-route',
@@ -99,6 +109,12 @@ describe('instant-guidance-data card ordering', () => {
       'link',
     ],
     [
+      'metadata prefetch',
+      createPrefetchMetadataError('/x').message,
+      'metadata',
+      'prefetch',
+    ],
+    [
       'metadata navigation',
       createNavigationMetadataError('/x').message,
       'metadata',
@@ -122,6 +138,12 @@ describe('instant-guidance-data card ordering', () => {
       createLinkViewportError('/x').message,
       'viewport',
       'link',
+    ],
+    [
+      'viewport prefetch',
+      createPrefetchViewportError('/x').message,
+      'viewport',
+      'prefetch',
     ],
     [
       'viewport navigation',

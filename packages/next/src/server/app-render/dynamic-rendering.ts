@@ -48,12 +48,14 @@ import {
   createDynamicBodyError,
   createRuntimeBodyErrorInNavigation,
   createNavigationBodyErrorInNavigation,
+  createPrefetchBodyErrorInNavigation,
   createDynamicBodyErrorInNavigation,
   createDynamicOrRuntimeBodyError,
   createRuntimeMetadataError,
   createDynamicMetadataError,
   createRuntimeViewportError,
   createNavigationViewportError,
+  createPrefetchViewportError,
   createDynamicViewportError,
   createDynamicOrRuntimeViewportError,
   createDynamicOrRuntimeMetadataError,
@@ -62,6 +64,7 @@ import {
   createLinkMetadataError,
   createLinkViewportError,
   createNavigationMetadataError,
+  createPrefetchMetadataError,
   createNonPrerenderableMetadataErrorInStaticRoute,
   createNonPrerenderableViewportErrorInStaticRoute,
   createNonPrerenderableBodyErrorInStaticRoute,
@@ -803,10 +806,12 @@ export enum DynamicHoleKind {
   Link = 2,
   /** We know that this hole is caused by navigation(). */
   Navigation = 3,
+  /** We know that this hole is caused by prefetch(). */
+  Prefetch = 4,
   /** We know that this hole is caused by dynamic data. */
-  Dynamic = 4,
+  Dynamic = 5,
   /** We know that this hole is caused by runtime or dynamic data, but don't know which. */
-  RuntimeOrDynamic = 5,
+  RuntimeOrDynamic = 6,
 }
 
 // In Instant Validation we can always discriminate between runtime and dynamic.
@@ -1009,6 +1014,8 @@ function createBodyErrorInNavigation(
       return createLinkBodyErrorInNavigation(route)
     case DynamicHoleKind.Navigation:
       return createNavigationBodyErrorInNavigation(route)
+    case DynamicHoleKind.Prefetch:
+      return createPrefetchBodyErrorInNavigation(route)
     case DynamicHoleKind.Dynamic:
       return createDynamicBodyErrorInNavigation(route)
   }
@@ -1022,6 +1029,8 @@ function createMetadataError(kind: DynamicHoleKind, route: string): Error {
       return createLinkMetadataError(route)
     case DynamicHoleKind.Navigation:
       return createNavigationMetadataError(route)
+    case DynamicHoleKind.Prefetch:
+      return createPrefetchMetadataError(route)
     case DynamicHoleKind.Dynamic:
       return createDynamicMetadataError(route)
     case DynamicHoleKind.RuntimeOrDynamic:
@@ -1037,6 +1046,8 @@ function createViewportError(kind: DynamicHoleKind, route: string): Error {
       return createLinkViewportError(route)
     case DynamicHoleKind.Navigation:
       return createNavigationViewportError(route)
+    case DynamicHoleKind.Prefetch:
+      return createPrefetchViewportError(route)
     case DynamicHoleKind.Dynamic:
       return createDynamicViewportError(route)
     case DynamicHoleKind.RuntimeOrDynamic:
