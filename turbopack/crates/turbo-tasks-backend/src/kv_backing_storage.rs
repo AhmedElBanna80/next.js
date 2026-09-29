@@ -34,8 +34,8 @@ use crate::{
 #[derive(Clone, Copy)]
 #[repr(u8)]
 enum InfraKey {
-    NextFreeTaskId = 1,
-    GcRoots = 2,
+    NextFreeTaskId = 0,
+    GcRoots = 1,
 }
 
 impl InfraKey {
@@ -725,20 +725,6 @@ mod tests {
         );
 
         db.shutdown()?;
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn snapshot_writes_no_operation_record() -> Result<()> {
-        let tempdir = test_temp_dir()?;
-        let db = TurboKeyValueDatabase::new(tempdir.path().to_path_buf(), TEST_STORAGE_OPTIONS)?;
-        let storage = TurboBackingStorage::new_in_memory(db);
-
-        storage.save_snapshot(None, Vec::<Vec<SnapshotItem>>::new())?;
-        // The former operations key was 0. New snapshots must never recreate it, even
-        // when there is no task data to write.
-        assert!(storage.inner.database.get(KeySpace::Infra, &[0])?.is_none());
-        storage.inner.database.shutdown()?;
         Ok(())
     }
 }

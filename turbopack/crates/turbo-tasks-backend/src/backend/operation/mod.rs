@@ -258,15 +258,10 @@ impl TaskLockCounter {
     }
 }
 
-enum ExecutePhase<'e> {
-    Normal,
-    Gc(&'e dyn Fn(TaskId)),
-}
-
 pub struct ExecuteContextImpl<'e> {
     backend: &'e TurboTasksBackend,
     turbo_tasks: &'e TurboTasks<TurboTasksBackend>,
-    phase: ExecutePhase<'e>,
+    gc_collectible: Option<&'e dyn Fn(TaskId)>,
     /// Held until all graph changes made by this context have completed.
     _operation_guard: Option<OperationGuard<'e>>,
     /// Held by contexts built through `TurboTasksBackend::try_execute_context`, so that storage
@@ -283,7 +278,7 @@ impl<'e> ExecuteContextImpl<'e> {
         Self {
             backend,
             turbo_tasks,
-            phase: ExecutePhase::Normal,
+            gc_collectible: None,
             _operation_guard: backend.start_operation(),
             _shutdown_guard: None,
             task_lock_counter: TaskLockCounter::new(),
@@ -301,7 +296,7 @@ impl<'e> ExecuteContextImpl<'e> {
         Self {
             backend,
             turbo_tasks,
-            phase: ExecutePhase::Normal,
+            gc_collectible: None,
             _operation_guard: backend.start_operation(),
             _shutdown_guard: Some(shutdown_guard),
             task_lock_counter: TaskLockCounter::new(),
@@ -312,7 +307,7 @@ impl<'e> ExecuteContextImpl<'e> {
     /// collector while it holds the coordinator's exclusion phase.
     ///
     /// The exclusion excludes all concurrent operations and task execution, so taking an operation
-    /// guard here would deadlock. Requiring `&ExclusionPhase` makes that a type-level obligation:
+    /// guard here would deadlock. Requiring `&SnapshotPhase` makes that a type-level obligation:
     /// the caller cannot construct this context without actually holding the exclusion.
     pub(super) fn new_for_gc(
         backend: &'e TurboTasksBackend,
@@ -323,7 +318,7 @@ impl<'e> ExecuteContextImpl<'e> {
         Self {
             backend,
             turbo_tasks,
-            phase: ExecutePhase::Gc(gc_collectible),
+            gc_collectible: Some(gc_collectible),
             _operation_guard: None,
             _shutdown_guard: None,
             task_lock_counter: TaskLockCounter::new(),
@@ -1359,7 +1354,7 @@ impl<'e> ExecuteContext<'e> for ExecuteContextImpl<'e> {
     }
 
     fn note_maybe_collectible(&mut self, task: &impl TaskGuard) {
-        if let ExecutePhase::Gc(collector) = self.phase
+        if let Some(collector) = self.gc_collectible
             && task.is_gc_collectible()
         {
             collector(task.id());
@@ -1422,7 +1417,7 @@ impl<'e> ChildExecuteContext<'e> for ChildExecuteContextImpl<'e> {
         ExecuteContextImpl {
             backend: self.backend,
             turbo_tasks: self.turbo_tasks,
-            phase: ExecutePhase::Normal,
+            gc_collectible: None,
             _operation_guard: None,
             // A child context runs inside its parent's execution, which the foreground drain
             // already waits for, so it needs no shutdown guard of its own.

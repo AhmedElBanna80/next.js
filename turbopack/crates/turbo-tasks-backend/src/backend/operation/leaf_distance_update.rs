@@ -177,10 +177,6 @@ impl Operation for LeafDistanceUpdateQueue {
         if self.is_empty() {
             return;
         }
-        loop {
-            if self.process(ctx) {
-                return;
-            }
-        }
+        while !self.process(ctx) {}
     }
 }

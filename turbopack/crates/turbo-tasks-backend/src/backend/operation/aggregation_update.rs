@@ -340,12 +340,18 @@ impl AggregationUpdateJob {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct DirtyContainerUpdate {
+    task_id: TaskId,
+    dirty_count: i32,
+    current_session_clean_count: i32,
+}
+
 /// Aggregated data update.
 #[derive(Default, Clone, Debug)]
 pub struct AggregatedDataUpdate {
     /// One of the inner tasks has changed its dirty state or aggregated dirty state.
-    /// (task id, dirty update, current session clean update)
-    dirty_container_update: Option<(TaskId, i32, i32)>,
+    dirty_container_update: Option<DirtyContainerUpdate>,
     /// One of the inner tasks has changed its collectibles count or aggregated collectibles count.
     collectibles_update: Vec<(CollectibleRef, i32)>,
 }
@@ -403,9 +409,9 @@ impl AggregatedDataUpdate {
             dirty_container_update,
             collectibles_update,
         } = &mut self;
-        if let Some((_, value, current_session_clean_update)) = dirty_container_update.as_mut() {
-            *value = -*value;
-            *current_session_clean_update = -*current_session_clean_update;
+        if let Some(update) = dirty_container_update.as_mut() {
+            update.dirty_count = -update.dirty_count;
+            update.current_session_clean_count = -update.current_session_clean_count;
         }
         for (_, value) in collectibles_update.iter_mut() {
             *value = -*value;
@@ -435,8 +441,11 @@ impl AggregatedDataUpdate {
             collectibles_update,
         } = self;
         let mut result = Self::default();
-        if let &Some((dirty_container_id, count, current_session_clean_update)) =
-            dirty_container_update
+        if let &Some(DirtyContainerUpdate {
+            task_id: dirty_container_id,
+            dirty_count: count,
+            current_session_clean_count: current_session_clean_update,
+        }) = dirty_container_update
         {
             if should_track_activeness {
                 // When a dirty container count is increased and the task is considered as active
@@ -554,8 +563,8 @@ impl AggregatedDataUpdate {
                 if let Some(aggregated_update) = compute_result.aggregated_update(task_id) {
                     result = aggregated_update;
 
-                    if let Some((_, count, current_session_clean)) = result.dirty_container_update
-                        && count - current_session_clean < 0
+                    if let Some(update) = result.dirty_container_update
+                        && update.dirty_count - update.current_session_clean_count < 0
                     {
                         // When the current task is no longer dirty, we need to fire the
                         // aggregate root events and do some cleanup
@@ -630,7 +639,11 @@ impl AggregatedDataUpdate {
         count: i32,
         current_session_clean_update: i32,
     ) -> Self {
-        self.dirty_container_update = Some((task_id, count, current_session_clean_update));
+        self.dirty_container_update = Some(DirtyContainerUpdate {
+            task_id,
+            dirty_count: count,
+            current_session_clean_count: current_session_clean_update,
+        });
         self
     }
 
@@ -3483,21 +3496,14 @@ impl AggregationUpdateQueue {
         mut self,
         ctx: &mut impl ExecuteContext<'_>,
     ) -> AggregationUpdateQueueStats {
-        loop {
-            if self.process(ctx) {
-                return self.stats;
-            }
-        }
+        while !self.process(ctx) {}
+        self.stats
     }
 }
 
 impl Operation for AggregationUpdateQueue {
     fn execute(mut self, ctx: &mut impl ExecuteContext<'_>) {
-        loop {
-            if self.process(ctx) {
-                return;
-            }
-        }
+        while !self.process(ctx) {}
     }
 }
 

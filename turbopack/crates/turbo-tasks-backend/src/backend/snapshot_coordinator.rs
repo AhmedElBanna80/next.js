@@ -11,18 +11,18 @@
 //!   active work completes could deadlock graph propagation.
 //! - At that boundary the phase atomically closes admission, does its work, then wakes new
 //!   operations. No partially propagated graph work needs to be saved for replay.
-//!
-//! Snapshotting and GC share one exclusion. GC hands its work straight to the snapshot that
-//! persists it, without admitting operations in between.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use parking_lot::{Condvar, Mutex};
 use tracing::info_span;
 
-/// High bit: set while a snapshot is in flight.
-/// Low bits: count of operations currently executing.
-const SNAPSHOT_REQUESTED_BIT: usize = 1 << (usize::BITS - 1);
+/// Blocks admission while a snapshot is in flight.
+const SNAPSHOT_RUNNING_BIT: usize = 1 << (usize::BITS - 1);
+/// Requests notification at a zero-active boundary without blocking admission.
+const SNAPSHOT_WAITING_BIT: usize = 1 << (usize::BITS - 2);
+/// Low bits count operations; the two high bits coordinate snapshot admission.
+const OPERATION_COUNT_MASK: usize = !(SNAPSHOT_RUNNING_BIT | SNAPSHOT_WAITING_BIT);
 
 /// State protected by the mutex.
 struct State {
@@ -32,11 +32,9 @@ struct State {
 
 /// Coordinates operation/snapshot/GC interleaving.
 pub struct SnapshotCoordinator {
-    /// Combined count + bit. See [`SNAPSHOT_REQUESTED_BIT`].
+    /// Operation count plus [`SNAPSHOT_WAITING_BIT`] and [`SNAPSHOT_RUNNING_BIT`].
     in_progress_operations: AtomicUsize,
     operations_waiting: AtomicBool,
-    /// Set while a phase is waiting for a quiescent boundary, without closing admission.
-    phase_waiting: AtomicBool,
     state: Mutex<State>,
     /// Notified whenever the last active operation leaves while a phase is waiting.
     operations_drained: Condvar,
@@ -55,21 +53,12 @@ impl SnapshotCoordinator {
         Self {
             in_progress_operations: AtomicUsize::new(0),
             operations_waiting: AtomicBool::new(false),
-            phase_waiting: AtomicBool::new(false),
             state: Mutex::new(State {
                 snapshot_requested: false,
             }),
             operations_drained: Condvar::new(),
             snapshot_completed: Condvar::new(),
         }
-    }
-
-    /// Returns `true` while a snapshot is in flight (not while waiting for quiescence).
-    #[cfg(test)]
-    pub fn snapshot_pending(&self) -> bool {
-        // Acquire so that observing the bit synchronizes with anything the
-        // snapshotter wrote before setting it.
-        (self.in_progress_operations.load(Ordering::Acquire) & SNAPSHOT_REQUESTED_BIT) != 0
     }
 
     /// Begin an operation. Returns a guard that decrements on drop.
@@ -79,7 +68,7 @@ impl SnapshotCoordinator {
     pub fn begin_operation(&self) -> OperationGuard<'_> {
         // Fast path: no snapshot in flight, single atomic increment.
         let prev = self.in_progress_operations.fetch_add(1, Ordering::AcqRel);
-        if (prev & SNAPSHOT_REQUESTED_BIT) == 0 {
+        if (prev & SNAPSHOT_RUNNING_BIT) == 0 {
             return OperationGuard { coord: self };
         }
         #[cold]
@@ -123,18 +112,25 @@ impl SnapshotCoordinator {
             !state.snapshot_requested,
             "begin_snapshot called while another snapshot was already in flight"
         );
-        // SeqCst pairs with the last guard's decrement and flag read: if that guard
-        // misses this flag, its decrement precedes our count check, so we won't park.
-        self.phase_waiting.store(true, Ordering::SeqCst);
+        // Request a drain without blocking new operations that an active graph update may
+        // depend on. Sharing the counter means the last decrement either observes this bit
+        // and notifies us, or precedes this fetch_or so we observe the drained count.
+        let prev = self
+            .in_progress_operations
+            .fetch_or(SNAPSHOT_WAITING_BIT, Ordering::AcqRel);
+        assert!(
+            (prev & (SNAPSHOT_WAITING_BIT | SNAPSHOT_RUNNING_BIT)) == 0,
+            "begin_snapshot called while another snapshot was already in flight"
+        );
         let _span = info_span!("await operations settle").entered();
         loop {
             if self
                 .in_progress_operations
                 .compare_exchange(
-                    0,
-                    SNAPSHOT_REQUESTED_BIT,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
+                    SNAPSHOT_WAITING_BIT,
+                    SNAPSHOT_RUNNING_BIT,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
                 )
                 .is_ok()
             {
@@ -144,11 +140,11 @@ impl SnapshotCoordinator {
             // complete. The guard's drop synchronizes with this mutex when notifying.
             tokio::task::block_in_place(|| {
                 self.operations_drained.wait_while(&mut state, |_| {
-                    self.in_progress_operations.load(Ordering::SeqCst) != 0
+                    (self.in_progress_operations.load(Ordering::Acquire) & OPERATION_COUNT_MASK)
+                        != 0
                 });
             });
         }
-        self.phase_waiting.store(false, Ordering::SeqCst);
         state.snapshot_requested = true;
         // Release the mutex now — the snapshotter does the heavy work without holding it.
         // New operations wait for the phase to complete.
@@ -166,15 +162,15 @@ pub struct OperationGuard<'a> {
 impl Drop for OperationGuard<'_> {
     fn drop(&mut self) {
         let coord = self.coord;
-        let prev = coord.in_progress_operations.fetch_sub(1, Ordering::SeqCst);
+        let prev = coord.in_progress_operations.fetch_sub(1, Ordering::AcqRel);
         // Underflow means a guard was dropped without a matching increment;
         // promoted from debug_assert because the alternative is silently
         // wrapping to usize::MAX and breaking every subsequent snapshot.
         assert!(
-            (prev & !SNAPSHOT_REQUESTED_BIT) > 0,
+            (prev & OPERATION_COUNT_MASK) > 0,
             "OperationGuard::drop underflow: in_progress_operations was {prev:#x}"
         );
-        if prev == 1 && coord.phase_waiting.load(Ordering::SeqCst) {
+        if prev == (SNAPSHOT_WAITING_BIT | 1) {
             #[cold]
             fn notify_drained(coord: &SnapshotCoordinator) {
                 // Take the state mutex around `notify_all`. This is defensive against
@@ -218,9 +214,9 @@ impl Drop for SnapshotPhase<'_> {
         let prev = self
             .coord
             .in_progress_operations
-            .fetch_and(!SNAPSHOT_REQUESTED_BIT, Ordering::AcqRel);
+            .fetch_and(!SNAPSHOT_RUNNING_BIT, Ordering::AcqRel);
         assert!(
-            (prev & SNAPSHOT_REQUESTED_BIT) != 0,
+            (prev & SNAPSHOT_RUNNING_BIT) != 0,
             "SnapshotPhase::drop: snapshot bit was already cleared (prev={prev:#x})"
         );
         // Notify everyone waiting for the snapshot to finish under the
@@ -243,8 +239,14 @@ mod tests {
 
     use super::*;
 
+    impl SnapshotCoordinator {
+        fn snapshot_pending(&self) -> bool {
+            (self.in_progress_operations.load(Ordering::Acquire) & SNAPSHOT_RUNNING_BIT) != 0
+        }
+    }
+
     fn wait_for_snapshot_request(coord: &SnapshotCoordinator) {
-        while !coord.phase_waiting.load(Ordering::Acquire) {
+        while (coord.in_progress_operations.load(Ordering::Acquire) & SNAPSHOT_WAITING_BIT) == 0 {
             thread::yield_now();
         }
     }
@@ -269,6 +271,10 @@ mod tests {
         let coord = SnapshotCoordinator::new();
         let phase = coord.begin_snapshot();
         assert!(coord.snapshot_pending());
+        assert_eq!(
+            coord.in_progress_operations.load(Ordering::Acquire),
+            SNAPSHOT_RUNNING_BIT
+        );
         drop(phase);
         assert!(!coord.snapshot_pending());
     }
@@ -292,6 +298,10 @@ mod tests {
         // New work must remain admitted while the existing operation is running.
         wait_for_snapshot_request(&coord);
         assert!(!coord.snapshot_pending());
+        assert_eq!(
+            coord.in_progress_operations.load(Ordering::Acquire),
+            SNAPSHOT_WAITING_BIT | 1
+        );
         assert_eq!(started_snapshot.load(Ordering::Acquire), 0);
 
         // Drop the operation — snapshotter should now proceed.
@@ -359,8 +369,16 @@ mod tests {
             // The add arrives after the snapshot was requested, but the active removal
             // depends on it. Closing admission before this point would deadlock.
             let add = coord.begin_operation();
+            assert_eq!(
+                coord.in_progress_operations.load(Ordering::Acquire),
+                SNAPSHOT_WAITING_BIT | 2
+            );
             done.store(true, Ordering::Release);
             drop(add);
+            assert_eq!(
+                coord.in_progress_operations.load(Ordering::Acquire),
+                SNAPSHOT_WAITING_BIT | 1
+            );
             drop(removal);
             snapshot.join().unwrap();
         });
