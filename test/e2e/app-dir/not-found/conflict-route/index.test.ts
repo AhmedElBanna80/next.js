@@ -1,12 +1,14 @@
 import { nextTestSetup } from 'e2e-utils'
 
-// TODO(deploy-test-completion): Re-enable this suite in deploy mode.
-// It likely mutates files in the isolated local fixture after setup.
 // @force-gate !deploy
 describe('app dir - not-found - conflict route', () => {
-  const { next } = nextTestSetup({
+  const { next, skipped } = nextTestSetup({
     files: __dirname,
   })
+
+  if (skipped) {
+    return
+  }
 
   const runTests = () => {
     it('should use the not-found page for non-matching routes', async () => {

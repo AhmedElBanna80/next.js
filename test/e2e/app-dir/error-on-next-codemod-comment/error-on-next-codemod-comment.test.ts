@@ -6,14 +6,13 @@ import {
   retry,
 } from 'next-test-utils'
 
-// TODO(deploy-test-completion): Re-enable this suite in deploy mode.
-// It likely expects a local build failure instead of a successful deployment.
 // @force-gate !deploy
 describe('app-dir - error-on-next-codemod-comment', () => {
-  const { next, isNextDev } = nextTestSetup({
+  const { next, isNextDev, skipped } = nextTestSetup({
     files: __dirname,
     skipStart: true,
   })
+  if (skipped) return
 
   if (isNextDev) {
     beforeAll(async () => {
