@@ -24,9 +24,7 @@ use turbo_tasks::{
     macro_helpers::NativeFunction,
 };
 
-pub use self::aggregation_update::{
-    AggregationUpdateQueue, ComputeDirtyAndCleanUpdate, execute_aggregation_queues,
-};
+pub use self::aggregation_update::{AggregationUpdateQueue, ComputeDirtyAndCleanUpdate};
 use crate::{
     backend::{
         EventDescription, TaskDataCategory, TurboTasksBackend,

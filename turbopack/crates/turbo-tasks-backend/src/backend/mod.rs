@@ -67,8 +67,8 @@ use crate::{
             AggregationUpdateJob, AggregationUpdateQueue, ChildExecuteContext,
             CleanupOldEdgesOperation, ExecuteContext, ExecuteContextImpl, LeafDistanceUpdateQueue,
             Operation, OutdatedEdge, TaskGuard, TaskType, TaskTypeRef, capture_all_edges,
-            connect_child, connect_children, execute_aggregation_queues, get_aggregation_number,
-            get_uppers, invalidate, make_task_dirty_internal, prepare_new_children, update_cell,
+            connect_child, connect_children, get_aggregation_number, get_uppers, invalidate,
+            make_task_dirty_internal, prepare_new_children, update_cell,
         },
         snapshot_coordinator::{OperationGuard, SnapshotCoordinator},
         storage::Storage,
@@ -2652,7 +2652,7 @@ impl TurboTasksBackend {
         if output_dependent_tasks.len() > DEPENDENT_TASKS_DIRTY_PARALLELIZATION_THRESHOLD {
             let chunk_size = good_chunk_size(output_dependent_tasks.len());
             let chunks = into_chunks(output_dependent_tasks.to_vec(), chunk_size);
-            let queues = scope_bounded(chunks.len(), |scope| {
+            let _ = scope_bounded(chunks.len(), |scope| {
                 for chunk in chunks {
                     let child_ctx = ctx.child_context();
                     #[cfg(feature = "task_dirty_cause")]
@@ -2670,12 +2670,10 @@ impl TurboTasksBackend {
                                 &mut queue,
                             )
                         }
-                        queue
+                        queue.execute(&mut ctx);
                     });
                 }
-            })
-            .collect::<Vec<_>>();
-            execute_aggregation_queues(queues, ctx);
+            });
         } else {
             let mut queue = AggregationUpdateQueue::new();
             for dependent_task_id in output_dependent_tasks {

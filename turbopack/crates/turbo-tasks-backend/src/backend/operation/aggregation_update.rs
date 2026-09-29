@@ -3501,24 +3501,6 @@ impl Operation for AggregationUpdateQueue {
     }
 }
 
-/// Drain related queues fairly. A removal can be waiting for an add in a different queue;
-/// finishing each queue in isolation would exhaust its retry budget before that add runs.
-pub fn execute_aggregation_queues(
-    queues: impl IntoIterator<Item = AggregationUpdateQueue>,
-    ctx: &mut impl ExecuteContext<'_>,
-) {
-    run_fair(queues, |queue| queue.process(ctx));
-}
-
-fn run_fair<T>(queues: impl IntoIterator<Item = T>, mut step: impl FnMut(&mut T) -> bool) {
-    let mut queues: VecDeque<_> = queues.into_iter().collect();
-    while let Some(mut queue) = queues.pop_front() {
-        if !step(&mut queue) {
-            queues.push_back(queue);
-        }
-    }
-}
-
 trait TaskIdWithOptionalCount {
     fn task_id(&self) -> TaskId;
     fn task_id_and_count(&self) -> (TaskId, u32);
@@ -3582,26 +3564,5 @@ fn retry_loop(mut retry: u16, mut f: impl FnMut() -> ControlFlow<()>) -> Result<
         } else {
             time = Some(Instant::now());
         }
-    }
-}
-
-#[cfg(test)]
-mod fair_queue_tests {
-    use super::run_fair;
-
-    #[test]
-    fn waiting_removal_allows_later_add_to_run() {
-        let mut added = false;
-        let mut order = Vec::new();
-        run_fair(["remove", "add"], |job| {
-            order.push(*job);
-            if *job == "add" {
-                added = true;
-                true
-            } else {
-                added
-            }
-        });
-        assert_eq!(order, ["remove", "add", "remove"]);
     }
 }
