@@ -107,7 +107,6 @@ describe('resume-data-cache', () => {
       )
     }
 
-    // @gate !partialPrefetchingGlobal
     it('use cache', async () => {
       await testImpl({
         name: 'use cache',
@@ -117,7 +116,6 @@ describe('resume-data-cache', () => {
       })
     })
 
-    // @gate !(partialPrefetchingGlobal && deploy)
     it('fetch cache', async () => {
       await testImpl({
         name: 'fetch cache',
@@ -128,7 +126,6 @@ describe('resume-data-cache', () => {
     })
   })
 
-  // @gate !partialPrefetchingGlobal
   it('should use RDC for server action re-renders', async () => {
     const url = '/server-action'
     const valuePattern = /cache-random-\d+\.\d+/
@@ -186,7 +183,6 @@ describe('resume-data-cache', () => {
     })
   })
 
-  // @gate !partialPrefetchingGlobal
   it('should see fresh data after updateTag in server action with use cache', async () => {
     // This test verifies that when a server action calls updateTag(),
     // the subsequent re-render sees fresh data instead of stale RDC data.
@@ -251,7 +247,6 @@ describe('resume-data-cache', () => {
     })
   })
 
-  // @gate !(partialPrefetchingGlobal && deploy)
   it('should see fresh data after updateTag in server action with fetch cache', async () => {
     // This test verifies that when a server action calls updateTag(),
     // the subsequent re-render sees fresh data instead of stale RDC data.
