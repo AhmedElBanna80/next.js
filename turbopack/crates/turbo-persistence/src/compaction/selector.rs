@@ -10,9 +10,11 @@
 //!   the bottom run are larger than `max_space_amplification_percent` of the bottom run. A
 //!   tombstone is small, but deletes an entry of the bottom run, so it counts as an average bottom
 //!   entry.
-//! - An intermediate merge merges only the files above the bottom run, when there are more than
+//! - An intermediate merge merges files above the bottom run, when there are more than
 //!   `max_files_above_bottom` of them. This bounds the number of files a lookup has to consult
-//!   without rewriting the bottom run.
+//!   without rewriting the bottom run. It merges the newest files of similar size (see
+//!   `size_ratio_percent`), so that small files, e.g. from small commits, are merged with each
+//!   other without rewriting a larger file written before them.
 //!
 //! The bytes rewritten by bottom merges are limited to `max_rewrite_factor` times the fresh bytes
 //! (written by commits and not compacted yet) of the family, so that the cost of compaction follows
@@ -66,6 +68,12 @@ pub struct CompactConfig {
     /// The files above the bottom run of a shard are merged when there are more than this many.
     pub max_files_above_bottom: usize,
 
+    /// An intermediate merge takes the newest file above the bottom run, and then each next older
+    /// one that is at most this percentage larger than the files taken so far, but at least the
+    /// two newest. E.g. with `100`, a file joins while it's at most twice the size of the newer
+    /// files combined. This is the size ratio of RocksDB's universal compaction.
+    pub size_ratio_percent: u16,
+
     /// Bottom merges of a family stop once they rewrote this factor times the size of the fresh
     /// files of the family. The first bottom merge of a family always runs. E.g. with `2.0`, after
     /// commits wrote 10MB to a family, its bottom merges stop once they rewrote 20MB.
@@ -83,6 +91,7 @@ impl Default for CompactConfig {
             max_space_amplification_percent: 50,
             min_bottom_merge_bytes: 1024 * 1024,
             max_files_above_bottom: 4,
+            size_ratio_percent: 100,
             max_rewrite_factor: 2.0,
             max_merge_jobs: 8,
         }
@@ -97,6 +106,7 @@ impl CompactConfig {
             min_bottom_merge_bytes: 0,
             // Irrelevant, as bottom merges are always chosen.
             max_files_above_bottom: usize::MAX,
+            size_ratio_percent: u16::MAX,
             max_rewrite_factor: f32::INFINITY,
             max_merge_jobs: usize::MAX,
         }
@@ -159,11 +169,34 @@ fn components<T: Compactable>(compactables: &[T], shard_bits: ShardBits) -> Vec<
 }
 
 /// Produces a [`Candidate`] for an intermediate merge of the files `above` the bottom run of a
-/// shard. Intermediate merges are ranked by how far the number of files above the bottom run
-/// exceeds `max_files_above_bottom`.
-fn intermediate_candidate(above: Vec<usize>, config: &CompactConfig) -> Candidate {
+/// shard (ascending, i.e. oldest first). Intermediate merges are ranked by how far the number of
+/// files above the bottom run exceeds `max_files_above_bottom`.
+///
+/// The merge takes the newest files, and then each next older one while it's at most
+/// `size_ratio_percent` larger than the files taken so far, but at least the two newest. It always
+/// takes the newest files, so its output can be placed after all files, and the older files it
+/// leaves out stay older than it.
+fn intermediate_candidate<T: Compactable>(
+    compactables: &[T],
+    above: Vec<usize>,
+    config: &CompactConfig,
+) -> Candidate {
+    let priority = above.len() as f32 / config.max_files_above_bottom.max(1) as f32;
+    let mut taken = 0u128;
+    let mut first = above.len();
+    while first > 0 {
+        let size = u128::from(compactables[above[first - 1]].size());
+        let taken_files = above.len() - first;
+        if taken_files >= 2 && size * 100 > taken * (100 + u128::from(config.size_ratio_percent)) {
+            break;
+        }
+        taken += size;
+        first -= 1;
+    }
+    let mut above = above;
+    above.drain(..first);
     Candidate {
-        priority: above.len() as f32 / config.max_files_above_bottom.max(1) as f32,
+        priority,
         job: MergeJob {
             members: above,
             bottom: false,
@@ -245,7 +278,7 @@ fn plan_family<T: Compactable>(
             };
             bottom_candidates.push((candidate, bottom_bytes + above_bytes, above));
         } else if above.len() > config.max_files_above_bottom {
-            intermediate_candidates.push(intermediate_candidate(above, config));
+            intermediate_candidates.push(intermediate_candidate(compactables, above, config));
         }
     }
 
@@ -269,7 +302,7 @@ fn plan_family<T: Compactable>(
         } else if above.len() > config.max_files_above_bottom {
             // The budget is exhausted, but an intermediate merge of the same shard is cheap and
             // still bounds the number of files a lookup consults.
-            intermediate_candidates.push(intermediate_candidate(above, config));
+            intermediate_candidates.push(intermediate_candidate(compactables, above, config));
         }
     }
     intermediate_candidates.sort_by(|a, b| b.priority.total_cmp(&a.priority));
@@ -411,6 +444,34 @@ mod tests {
         );
         files.pop();
         assert_eq!(plan(&files, 0, &test_config()), vec![]);
+    }
+
+    #[test]
+    fn test_intermediate_merge_takes_the_newest_files_of_similar_size() {
+        // A large file from a big commit, then five small files from small commits: only the small
+        // files are merged.
+        let mut files = vec![
+            file(0, 0, 10_000, true, false),
+            file(0, 0, 1000, false, true),
+        ];
+        files.extend((0..5).map(|_| file(0, 0, 10, false, true)));
+        assert_eq!(
+            plan(&files, 0, &test_config()),
+            vec![(vec![2, 3, 4, 5, 6], false)]
+        );
+        // Similar sizes are all merged, see `test_intermediate_merge_by_file_count`. With sizes
+        // that grow steeply towards older files, at least the two newest are merged.
+        let mut files = vec![file(0, 0, 100_000, true, false)];
+        files.extend([10_000, 1000, 100, 10, 1].map(|size| file(0, 0, size, false, true)));
+        assert_eq!(plan(&files, 0, &test_config()), vec![(vec![4, 5], false)]);
+        // A file joins while it's at most twice the size of the newer files combined: the two
+        // newest make 20, then 20 joins (40), then 40 joins (80), then 500 > 2 * 80 stops.
+        let mut files = vec![file(0, 0, 10_000, true, false)];
+        files.extend([500, 40, 20, 10, 10].map(|size| file(0, 0, size, false, true)));
+        assert_eq!(
+            plan(&files, 0, &test_config()),
+            vec![(vec![2, 3, 4, 5], false)]
+        );
     }
 
     #[test]
@@ -649,10 +710,24 @@ mod tests {
 
     /// A commit rewrites a churning set of hot keys and deletes some cold keys, like a build with
     /// garbage collection. The database is compacted after every commit.
+    /// Runs one compaction. Returns the entries written and whether it had bottom merges.
+    fn compact(
+        containers: &mut Vec<Container>,
+        config: &CompactConfig,
+        shard_bits: ShardBits,
+    ) -> (u64, bool) {
+        let jobs = plan_compaction(&[(&containers[..], shard_bits)], config).remove(0);
+        let bottom = jobs.iter().any(|job| job.bottom);
+        (run_jobs(containers, jobs, shard_bits), bottom)
+    }
+
+    /// After each commit like a build, `small_commits` commits rewrite a few hot keys each, like
+    /// snapshots of a development session. The database is compacted after every commit.
     fn simulate(
         config: &CompactConfig,
         shard_bits: ShardBits,
         iterations: usize,
+        small_commits: usize,
     ) -> SimulationResult {
         let mut rnd = rand::rngs::SmallRng::from_seed([0; 32]);
         let mut live = (0..KEY_COUNT).map(|k| k * KEY_SCALE).collect::<Vec<_>>();
@@ -678,11 +753,11 @@ mod tests {
         };
         let hot_count = KEY_COUNT as usize / 20;
         for iteration in 0..iterations {
-            let jobs = plan_compaction(&[(&containers[..], shard_bits)], config).remove(0);
-            if jobs.iter().any(|job| job.bottom) {
+            let (entries, bottom) = compact(&mut containers, config, shard_bits);
+            rewritten += entries;
+            if bottom {
                 result.compactions_with_bottom_merges += 1;
             }
-            rewritten += run_jobs(&mut containers, jobs, shard_bits);
             if iteration >= iterations / 4 {
                 let stored = containers.iter().map(|c| c.keys.len()).sum::<usize>();
                 result.max_space_amplification = result
@@ -723,6 +798,17 @@ mod tests {
             commit.sort_unstable();
             written += commit.len() as u64;
             containers.extend(split_by_shard(commit, shard_bits, false, true));
+
+            for _ in 0..small_commits {
+                rewritten += compact(&mut containers, config, shard_bits).0;
+                let mut commit = (0..20)
+                    .map(|_| (live[rnd.random_range(0..hot_count)], false))
+                    .collect::<Vec<_>>();
+                commit.sort_unstable();
+                commit.dedup();
+                written += commit.len() as u64;
+                containers.extend(split_by_shard(commit, shard_bits, false, true));
+            }
         }
         result.written = written;
         result.rewritten = rewritten;
@@ -746,7 +832,7 @@ mod tests {
     #[test]
     fn simulate_compactions() {
         let config = simulation_config(50, 2.0);
-        let result = simulate(&config, ShardBits::new(3), 200);
+        let result = simulate(&config, ShardBits::new(3), 200, 0);
         let write_amplification = result.rewritten as f64 / result.written as f64;
         println!(
             "space amp {:.2}, write amp {write_amplification:.2}, files per shard {}, compactions \
@@ -762,6 +848,35 @@ mod tests {
         assert!(write_amplification < 2.0);
     }
 
+    // Like `simulate_compactions`, too slow under Miri.
+    #[cfg(not(miri))]
+    #[test]
+    fn simulate_small_commits() {
+        // Build-like commits, each followed by 10 tiny commits. Merging only the newest files of
+        // similar size doesn't rewrite the files of the build-like commits for the tiny ones.
+        let result = |size_ratio_percent| {
+            let config = CompactConfig {
+                size_ratio_percent,
+                ..simulation_config(50, 2.0)
+            };
+            let result = simulate(&config, ShardBits::new(3), 60, 10);
+            let write_amplification = result.rewritten as f64 / result.written as f64;
+            println!(
+                "size ratio {size_ratio_percent}%: write amp {write_amplification:.2}, files per \
+                 shard {}",
+                result.max_files_per_shard
+            );
+            (write_amplification, result.max_files_per_shard)
+        };
+        let (merge_all, merge_all_files) = result(u16::MAX);
+        let (similar_size, similar_size_files) = result(100);
+        assert!(
+            similar_size < merge_all * 0.8,
+            "{similar_size:.2} vs {merge_all:.2}"
+        );
+        assert!(similar_size_files <= merge_all_files + 1);
+    }
+
     /// Prints the trade-off between space and write amplification.
     /// Run with `cargo test -p turbo-persistence -- --ignored --nocapture sweep`.
     #[test]
@@ -774,6 +889,7 @@ mod tests {
                     &simulation_config(threshold, factor),
                     ShardBits::new(3),
                     300,
+                    0,
                 );
                 println!(
                     "{threshold:>21} | {factor:>14} | {:>9.2} | {:>9.2} | {:>11}",

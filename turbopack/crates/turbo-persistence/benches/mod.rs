@@ -975,6 +975,7 @@ fn bench_compaction(c: &mut Criterion) {
                             max_space_amplification_percent: 50,
                             min_bottom_merge_bytes: 1024 * 1024,
                             max_files_above_bottom: 4,
+                            size_ratio_percent: 100,
                             max_rewrite_factor: 2.0,
                             max_merge_jobs: 16,
                         })
