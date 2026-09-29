@@ -78,8 +78,6 @@ impl LeafDistanceUpdateQueue {
                     dependencies_distance: dependency_distance,
                     dependencies_max_distance_in_buffer: dependency_max_distance_in_buffer,
                     done: false,
-                    #[cfg(feature = "trace_leaf_distance_update")]
-                    span: Some(Span::current()),
                 });
                 self.queue.push((Reverse(dependency_distance), task_id));
             }
@@ -96,7 +94,7 @@ impl LeafDistanceUpdateQueue {
                     dependencies_max_distance_in_buffer,
                     ref mut done,
                     #[cfg(feature = "trace_leaf_distance_update")]
-                    ref span,
+                    span,
                 } = self.leaf_distance_updates.get_mut(&task_id).unwrap();
                 if queue_dependencies_distance != dependencies_distance {
                     // Stale entry in queue
@@ -105,7 +103,7 @@ impl LeafDistanceUpdateQueue {
                     continue;
                 }
                 #[cfg(feature = "trace_leaf_distance_update")]
-                let _guard = span.as_ref().map(|s| s.clone().entered());
+                let _guard = span.map(|s| s.entered());
                 *done = true;
                 self.update_leaf_distance(
                     ctx,
