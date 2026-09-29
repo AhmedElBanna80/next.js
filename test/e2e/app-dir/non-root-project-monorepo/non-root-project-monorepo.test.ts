@@ -8,13 +8,14 @@ import {
 import * as path from 'path'
 
 describe('non-root-project-monorepo', () => {
-  const { next, skipped, isTurbopack, isNextDev, isRspack } = nextTestSetup({
+  const { next, isTurbopack, isNextDev, isRspack } = nextTestSetup({
     files: {
       apps: new FileRef(path.resolve(__dirname, 'apps')),
       packages: new FileRef(path.resolve(__dirname, 'packages')),
       // Deliberately shadows apps/web/content, to pin down which one a
       // `/`-rooted import resolves from.
       content: new FileRef(path.resolve(__dirname, 'content')),
+      'vercel.json': new FileRef(path.resolve(__dirname, 'vercel.json')),
       'pnpm-workspace.yaml': `packages:
       - 'apps/*'
       - 'packages/*'
@@ -24,12 +25,8 @@ describe('non-root-project-monorepo', () => {
     buildCommand: 'pnpm build',
     startCommand: (global as any).isNextDev ? 'pnpm dev' : 'pnpm start',
     installCommand: 'pnpm i',
-    skipDeployment: true,
+    env: { ENABLE_EXPERIMENTAL_COREPACK: '1' },
   })
-
-  if (skipped) {
-    return
-  }
 
   describe('server relative import', () => {
     it('should resolve a `/`-rooted import from the project directory, not the workspace root', async () => {
