@@ -147,7 +147,7 @@ describe('segment cache (metadata)', () => {
   // On the platform a cold ISR path is served from a completed static
   // prerender that cannot vary on the request tree, so the page body is sent
   // along with the head.
-  // @gate !deploy
+  // @gate !vercel
   it('requests only the head when the page segments are cached', async () => {
     let act: ReturnType<typeof createRouterAct>
     // The request tree of every navigation request (RSC requests that are

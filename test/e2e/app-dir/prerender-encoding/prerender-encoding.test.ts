@@ -32,7 +32,7 @@ describe('prerender-encoding', () => {
 
   // Vercel tries the raw URL and the fully decoded path for filesystem lookup.
   // Neither matches this output's decoded space/percent and still-encoded slash.
-  // @gate !deploy
+  // @gate !vercel
   it('should preserve an encoded slash in an exact closed catch-all path', async () => {
     const response = await next.fetch(
       '/closed/docs/space%20here/with%2Fslash/100%25'
@@ -47,7 +47,7 @@ describe('prerender-encoding', () => {
   // The Vercel adapter deployment path decodes the captured slash before
   // splitting catch-all values, whereas next start and plain Vercel deploys
   // preserve it within a single value.
-  // @gate !deploy || !adapter
+  // @gate !vercel || !adapter
   it('should preserve an encoded slash in an open catch-all fallback', async () => {
     const pathname = '/open/docs/space%20here/with%2Fslash/fallback%25'
     for (let i = 0; i < 2; i++) {
